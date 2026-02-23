@@ -1,74 +1,41 @@
-"""Prompt builder for the Replanner agent role."""
-
+"""Replanner agent prompt."""
 from __future__ import annotations
-
 from swe_af.execution.schemas import DAGState, IssueResult
 
 SYSTEM_PROMPT = """\
-You are a senior Engineering Manager responding to execution failures in an
-autonomous agent pipeline. Your agents are building software by executing a DAG
-of issues in parallel levels. Some issues have failed after retries and you must
-decide how to restructure the remaining work.
+Replanner: Decide how to handle execution failures in the DAG pipeline.
 
-## Your Responsibilities
+## Responsibilities
+When issues fail after retries, decide: continue, restructure, reduce scope, or abort.
 
-You own execution recovery. When a coding agent permanently fails on an issue,
-the pipeline calls you to decide: can we keep going, should we restructure, or
-must we abort? Your decision directly determines whether the project ships or
-stalls.
+## Actions
+- **CONTINUE**: Failure is non-critical, downstream can proceed
+- **MODIFY_DAG**: Restructure remaining issues (split, merge, simplify, add stubs/mocks)
+- **REDUCE_SCOPE**: Drop non-essential issues dependent on failure
+- **ABORT**: Core requirement unmet, no viable workaround
 
-## What You CAN Do
+## Constraints
+- Cannot modify completed work
+- Cannot retry exact same approach
+- Cannot ignore critical path failures
 
-- **CONTINUE**: The failure is non-critical. Downstream issues can proceed
-  without the failed issue's deliverables (perhaps with reduced functionality).
-- **MODIFY_DAG**: Restructure remaining issues. You can:
-  - Split a failed issue into smaller, more tractable pieces
-  - Merge related issues that together might succeed where one failed
-  - Reassign responsibilities between issues
-  - Simplify an issue's scope to make it achievable
-  - Add stub/mock issues that provide the interface a failed issue was supposed to
-- **REDUCE_SCOPE**: Drop non-essential issues that depended on the failure.
-  The project ships with reduced scope but still meets core requirements.
-- **ABORT**: The failure is fundamental — a core requirement cannot be met and
-  there is no viable workaround.
+## Decision Framework (ask in order)
+1. **Essential?** If no PRD must-have depends solely on this, REDUCE_SCOPE
+2. **Simplify?** Reduce to minimum for downstream (partial > none)
+3. **Alternative approach?** Error context shows why—can we restructure to avoid?
+4. **Stub viable?** Create minimal interface stub to satisfy contract
+5. **Unrecoverable?** If fundamental (missing API, impossible architecture), ABORT
 
-## What You CANNOT Do
+## Output (ReplanDecision JSON)
+- `updated_issues`: complete issue dicts (not partial)
+- `new_issues`: unique names, valid `depends_on`
+- `removed_issue_names`, `skipped_issue_names`: reference existing issues
+- `rationale`: concise explanation for execution log
 
-- Modify or undo completed work
-- Retry the exact same approach that already failed
-- Ignore failures in issues that are on the critical path to a must-have requirement
-
-## Decision Framework
-
-For each failed issue, ask in order:
-
-1. **Is it essential?** Check if any PRD must-have acceptance criterion depends
-   solely on this issue. If not, REDUCE_SCOPE by skipping it and its downstream.
-2. **Can we reduce scope?** Can the issue be simplified to provide just enough
-   for downstream issues? A partial implementation beats no implementation.
-3. **Is there an alternative approach?** The error context tells you WHY it
-   failed. Can the work be restructured to avoid that failure mode?
-4. **Can downstream proceed with a stub?** If the failed issue was supposed to
-   provide an interface, can we create a minimal stub that satisfies the contract?
-5. **Is this unrecoverable?** If the failure is fundamental (e.g., the required
-   external API doesn't exist, the approach is architecturally impossible), ABORT.
-
-## Output Format
-
-You must return a JSON object conforming to the ReplanDecision schema. Be precise:
-- ``updated_issues`` must contain complete issue dicts (not partial updates)
-- ``new_issues`` must have unique names and valid ``depends_on`` references
-- ``removed_issue_names`` and ``skipped_issue_names`` must reference existing issues
-- Your ``rationale`` should explain the decision concisely for the execution log
-
-## Important Constraints
-
-- You have READ-ONLY access to the codebase. Inspect files to understand the
-  current state but do not modify anything.
-- Previous replan attempts (if any) are shown in the context. Do NOT repeat
-  an approach that already failed.
-- Keep modifications minimal. The more you change, the higher the risk of
-  introducing new failures. Prefer targeted fixes over wholesale restructuring.\
+## Rules
+- READ-ONLY codebase access
+- Do NOT repeat failed replan approaches
+- Minimize changes (targeted fixes > wholesale restructuring)\
 """
 
 
@@ -78,35 +45,25 @@ def replanner_task_prompt(
     escalation_notes: list[dict] | None = None,
     adaptation_history: list[dict] | None = None,
 ) -> str:
-    """Build the task prompt for the replanner agent.
-
-    Assembles the full DAG context so the replanner has the complete picture:
-    original plan, PRD, architecture, what completed, what failed (with error
-    context), and what remains.
-    """
+    """Build replanner task prompt with full DAG context."""
     sections: list[str] = []
 
-    # --- Original Plan ---
-    sections.append("## Original Plan Summary")
-    sections.append(dag_state.original_plan_summary or "(not available)")
+    # Summaries
+    sections.append(f"## Original Plan\n{dag_state.original_plan_summary or '(not available)'}")
+    sections.append(f"\n## PRD\n{dag_state.prd_summary or '(not available)'}")
+    sections.append(f"\n## Architecture\n{dag_state.architecture_summary or '(not available)'}")
 
-    # --- PRD Summary ---
-    sections.append("\n## PRD Summary")
-    sections.append(dag_state.prd_summary or "(not available)")
+    # Reference paths
+    sections.append(
+        f"\n## References (read for full details)\n"
+        f"- PRD: {dag_state.prd_path}\n"
+        f"- Architecture: {dag_state.architecture_path}\n"
+        f"- Issues: {dag_state.issues_dir}\n"
+        f"- Repo: {dag_state.repo_path}"
+    )
 
-    # --- Architecture Summary ---
-    sections.append("\n## Architecture Summary")
-    sections.append(dag_state.architecture_summary or "(not available)")
-
-    # --- Reference Paths ---
-    sections.append("\n## Reference Paths (read these for full details)")
-    sections.append(f"- PRD: {dag_state.prd_path}")
-    sections.append(f"- Architecture: {dag_state.architecture_path}")
-    sections.append(f"- Issue files: {dag_state.issues_dir}")
-    sections.append(f"- Repository: {dag_state.repo_path}")
-
-    # --- Full DAG Structure ---
-    sections.append("\n## Full DAG (all levels)")
+    # DAG structure
+    sections.append("\n## Full DAG")
     issue_by_name = {i["name"]: i for i in dag_state.all_issues}
     for level_idx, level_names in enumerate(dag_state.levels):
         level_items = []
@@ -114,114 +71,93 @@ def replanner_task_prompt(
             issue = issue_by_name.get(name, {})
             deps = issue.get("depends_on", [])
             provides = issue.get("provides", [])
-            dep_str = f" (depends_on: {deps})" if deps else ""
+            dep_str = f" (deps: {deps})" if deps else ""
             prov_str = f" (provides: {provides})" if provides else ""
             level_items.append(f"  - {name}{dep_str}{prov_str}")
-        sections.append(f"Level {level_idx}:")
-        sections.append("\n".join(level_items))
+        sections.append(f"Level {level_idx}:\n" + "\n".join(level_items))
 
-    # --- Completed Issues ---
-    sections.append("\n## Completed Issues")
+    # Completed issues
+    sections.append("\n## Completed")
     if dag_state.completed_issues:
         for result in dag_state.completed_issues:
-            files = ", ".join(result.files_changed) if result.files_changed else "none recorded"
-            sections.append(
-                f"- **{result.issue_name}**: {result.result_summary}\n"
-                f"  Files changed: {files}"
-            )
+            files = ", ".join(result.files_changed) if result.files_changed else "none"
+            sections.append(f"- **{result.issue_name}**: {result.result_summary} (files: {files})")
     else:
-        sections.append("(none yet)")
+        sections.append("(none)")
 
-    # --- Failed Issues (the ones triggering this replan) ---
-    sections.append("\n## Failed Issues (triggering this replan)")
+    # Failed issues (trigger)
+    sections.append("\n## Failed (trigger)")
     for result in failed_issues:
         issue_data = issue_by_name.get(result.issue_name, {})
-        deps = issue_data.get("depends_on", [])
-        provides = issue_data.get("provides", [])
         sections.append(
             f"### {result.issue_name}\n"
-            f"- **Attempts**: {result.attempts}\n"
-            f"- **Error**: {result.error_message}\n"
-            f"- **Error context**:\n```\n{result.error_context}\n```\n"
-            f"- **Dependencies**: {deps}\n"
-            f"- **Was supposed to provide**: {provides}\n"
-            f"- **Description**: {issue_data.get('description', '(not available)')}"
+            f"Attempts: {result.attempts} | Error: {result.error_message}\n"
+            f"Context:\n```\n{result.error_context}\n```\n"
+            f"Deps: {issue_data.get('depends_on', [])} | Provides: {issue_data.get('provides', [])}\n"
+            f"Description: {issue_data.get('description', '(n/a)')}"
         )
 
-    # --- Remaining Issues ---
-    completed_names = {r.issue_name for r in dag_state.completed_issues}
-    failed_names = {r.issue_name for r in dag_state.failed_issues}
-    skipped_names = set(dag_state.skipped_issues)
-    done_names = completed_names | failed_names | skipped_names
-
+    # Remaining issues
+    done_names = (
+        {r.issue_name for r in dag_state.completed_issues} |
+        {r.issue_name for r in dag_state.failed_issues} |
+        set(dag_state.skipped_issues)
+    )
     remaining = [i for i in dag_state.all_issues if i["name"] not in done_names]
-    sections.append("\n## Remaining Issues (not yet executed)")
+    sections.append("\n## Remaining (not executed)")
     if remaining:
         for issue in remaining:
-            deps = issue.get("depends_on", [])
-            provides = issue.get("provides", [])
             sections.append(
-                f"- **{issue['name']}**: {issue.get('title', '')}\n"
-                f"  depends_on: {deps}, provides: {provides}"
+                f"- **{issue['name']}**: {issue.get('title', '')} "
+                f"(deps: {issue.get('depends_on', [])}, provides: {issue.get('provides', [])})"
             )
     else:
-        sections.append("(none — all issues have been attempted)")
+        sections.append("(none)")
 
-    # --- Previous Replan Attempts ---
+    # Previous replans
     if dag_state.replan_history:
-        sections.append("\n## Previous Replan Attempts (DO NOT REPEAT)")
+        sections.append("\n## Previous Replans (DO NOT REPEAT)")
         for i, prev in enumerate(dag_state.replan_history):
             sections.append(
-                f"### Replan #{i + 1}: {prev.action.value}\n"
-                f"Rationale: {prev.rationale}\n"
-                f"Summary: {prev.summary}"
+                f"#{i + 1}: {prev.action.value} — {prev.rationale} ({prev.summary})"
             )
 
-    # --- Issue Advisor Escalation Notes ---
+    # Issue Advisor escalations
     if escalation_notes:
-        sections.append("\n## Issue Advisor Escalation Notes")
         sections.append(
-            "These issues were analyzed by the Issue Advisor before escalation. "
-            "Use its diagnosis as a head start — do not repeat work it already did."
+            "\n## Issue Advisor Escalations\n"
+            "Use diagnosis below—don't repeat work already done."
         )
         for note in escalation_notes:
             sections.append(
                 f"### {note.get('issue_name', '?')}\n"
-                f"**Escalation context**: {note.get('escalation_context', '(none)')}"
+                f"Context: {note.get('escalation_context', '(none)')}"
             )
             adaptations = note.get("adaptations", [])
             if adaptations:
-                sections.append("**Previous adaptations tried**:")
+                sections.append("Tried:")
                 for a in adaptations:
-                    sections.append(
-                        f"  - {a.get('adaptation_type', '?')}: {a.get('rationale', '')}"
-                    )
+                    sections.append(f"  - {a.get('adaptation_type', '?')}: {a.get('rationale', '')}")
 
-    # --- Adaptation History ---
+    # Adaptation history
     if adaptation_history:
-        sections.append("\n## Adaptation History (ACs already modified — do not duplicate)")
+        sections.append("\n## Adaptations (ACs modified—don't duplicate)")
         for entry in adaptation_history:
             sections.append(
-                f"- **{entry.get('adaptation_type', '?')}** on issue "
-                f"(rationale: {entry.get('rationale', '')})"
+                f"- {entry.get('adaptation_type', '?')} ({entry.get('rationale', '')})"
+                + (f" | Dropped: {entry['dropped_criteria']}" if entry.get("dropped_criteria") else "")
             )
-            if entry.get("dropped_criteria"):
-                sections.append(f"  Dropped: {entry['dropped_criteria']}")
 
-    # --- Accumulated Debt ---
+    # Technical debt
     if hasattr(dag_state, "accumulated_debt") and dag_state.accumulated_debt:
-        sections.append("\n## Accumulated Technical Debt")
+        sections.append("\n## Technical Debt")
         for debt in dag_state.accumulated_debt:
             sections.append(
                 f"- [{debt.get('severity', 'medium')}] {debt.get('type', '?')}: "
                 f"{debt.get('description', debt.get('criterion', ''))}"
             )
 
-    # --- Instructions ---
-    sections.append(
-        "\n## Your Task\n"
-        "Analyze the failures above. Read the referenced files for full context "
-        "if needed. Decide how to proceed and return a ReplanDecision."
-    )
+    # Task
+    sections.append("\n## Task\nAnalyze failures. Read references if needed. Return ReplanDecision.")
 
     return "\n".join(sections)
