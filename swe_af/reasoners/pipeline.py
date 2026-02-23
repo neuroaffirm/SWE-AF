@@ -299,16 +299,32 @@ async def run_product_manager(
 
 @router.reasoner()
 async def run_architect(
-    prd: dict,
-    repo_path: str,
+    prd: dict | None = None,
+    repo_path: str = "",
     artifacts_dir: str = ".artifacts",
+    prd_path: str | None = None,
     feedback: str = "",
     model: str = "sonnet",
     max_turns: int = DEFAULT_AGENT_MAX_TURNS,
     permission_mode: str = "",
     ai_provider: str = "claude",
 ) -> dict:
-    """Run the architect agent to produce a technical architecture."""
+    """Run the architect agent to produce a technical architecture.
+
+    Args:
+        prd: PRD dict (for sequential execution) or None (for parallel execution with polling).
+        repo_path: Path to repository.
+        artifacts_dir: Artifacts directory relative to repo_path.
+        prd_path: Path to PRD file (for parallel execution). If prd is None, architect will poll this path.
+        feedback: Optional feedback from Tech Lead for revision.
+        model: Model to use for the architect agent.
+        max_turns: Maximum turns for the agent.
+        permission_mode: Permission mode for the agent.
+        ai_provider: AI provider to use.
+
+    Returns:
+        Architecture dict.
+    """
     router.note("Architect starting", tags=["architect", "start"])
 
     base = os.path.join(os.path.abspath(repo_path), artifacts_dir)
@@ -324,11 +340,15 @@ async def run_architect(
         permission_mode=permission_mode or None,
     ))
 
-    prd_obj = PRD(**prd)
+    # Support both modes: prd dict (sequential) or prd_path (parallel with polling)
+    prd_obj = PRD(**prd) if prd is not None else None
+    # Use provided prd_path or default from paths
+    effective_prd_path = prd_path if prd_path is not None else paths["prd"]
+
     system_prompt, task_prompt = architect_prompts(
         prd=prd_obj,
         repo_path=repo_path,
-        prd_path=paths["prd"],
+        prd_path=effective_prd_path,
         architecture_path=paths["architecture"],
         feedback=feedback or None,
     )
