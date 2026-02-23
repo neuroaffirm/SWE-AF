@@ -544,10 +544,16 @@ async def plan(
     """
     app.note("Pipeline starting", tags=["pipeline", "start"])
 
-    # 1. PM scopes the goal into a PRD
-    app.note("Phase 1: Product Manager", tags=["pipeline", "pm"])
-    pm_start = time.time()
-    prd = _unwrap(await app.call(
+    # Compute PRD path for parallel execution
+    abs_artifacts_dir = os.path.join(os.path.abspath(repo_path), artifacts_dir)
+    prd_path = os.path.join(abs_artifacts_dir, "plan", "prd.md")
+
+    # 1 & 2. PM and Architect run concurrently
+    app.note("Phase 1 & 2: Product Manager + Architect (parallel)", tags=["pipeline", "pm", "architect", "parallel"])
+    parallel_start = time.time()
+
+    # Create coroutines before await (required for true parallelism)
+    pm_coro = app.call(
         f"{NODE_ID}.run_product_manager",
         goal=goal,
         repo_path=repo_path,
@@ -556,24 +562,31 @@ async def plan(
         model=pm_model,
         permission_mode=permission_mode,
         ai_provider=ai_provider,
-    ), "run_product_manager")
-    pm_duration = time.time() - pm_start
-    app.note(f"PM: {pm_duration:.1f}s", tags=["pipeline", "pm", "duration_s", f"duration:{pm_duration:.1f}"])
+    )
 
-    # 2. Architect designs the solution
-    app.note("Phase 2: Architect", tags=["pipeline", "architect"])
-    architect_start = time.time()
-    arch = _unwrap(await app.call(
+    arch_coro = app.call(
         f"{NODE_ID}.run_architect",
-        prd=prd,
+        prd=None,  # Architect will poll for PRD file instead
         repo_path=repo_path,
         artifacts_dir=artifacts_dir,
+        prd_path=prd_path,  # Pass path for polling
         model=architect_model,
         permission_mode=permission_mode,
         ai_provider=ai_provider,
-    ), "run_architect")
-    architect_duration = time.time() - architect_start
-    app.note(f"Architect: {architect_duration:.1f}s", tags=["pipeline", "architect", "duration_s", f"duration:{architect_duration:.1f}"])
+    )
+
+    # Execute both concurrently
+    prd, arch = await asyncio.gather(pm_coro, arch_coro)
+
+    # Unwrap results
+    prd = _unwrap(prd, "run_product_manager")
+    arch = _unwrap(arch, "run_architect")
+
+    parallel_duration = time.time() - parallel_start
+    app.note(
+        f"PM + Architect (parallel): {parallel_duration:.1f}s",
+        tags=["pipeline", "pm", "architect", "parallel", "duration_s", f"duration:{parallel_duration:.1f}"]
+    )
 
     # 3. Tech Lead review loop
     review = None
