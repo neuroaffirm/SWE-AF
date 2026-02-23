@@ -457,6 +457,7 @@ async def _execute_single_issue(
     adaptations: list[IssueAdaptation] = []
     debt_items: list[dict] = []
     last_result: IssueResult | None = None
+    iteration_count = 0  # Track cumulative coding loop attempts
 
     max_advisor = config.max_advisor_invocations if config.enable_issue_advisor else 0
 
@@ -482,6 +483,7 @@ async def _execute_single_issue(
             raise ValueError("No execute_fn or call_fn — cannot execute issue")
 
         last_result = result
+        iteration_count += result.attempts  # Accumulate iteration attempts
 
         # Success — return with any accumulated adaptations/debt
         if result.outcome in (IssueOutcome.COMPLETED, IssueOutcome.COMPLETED_WITH_DEBT):
@@ -492,6 +494,15 @@ async def _execute_single_issue(
 
         # Advisor budget exhausted or disabled — return raw failure
         if advisor_round >= max_advisor or call_fn is None:
+            break
+
+        # GATE: Only invoke advisor after 3+ iterations
+        if iteration_count < 3:
+            if note_fn:
+                note_fn(
+                    f"Skipping Issue Advisor for {issue_name} (iteration {iteration_count} < 3)",
+                    tags=["issue_advisor", "skip", "early", issue_name],
+                )
             break
 
         # --- Invoke the Issue Advisor ---
@@ -539,11 +550,35 @@ async def _execute_single_issue(
             break  # advisor failed — return last coding loop result
 
         action = advisor_decision.get("action", "accept_with_debt")
+        confidence = advisor_decision.get("confidence", 0.5)
 
         if note_fn:
             note_fn(
                 f"Issue Advisor decision for {issue_name}: {action}",
                 tags=["issue_advisor", "decision", issue_name],
+            )
+
+        # LOW-CONFIDENCE ESCALATION: If advisor has low confidence, escalate to replanner
+        if confidence < 0.4:
+            if note_fn:
+                note_fn(
+                    f"Advisor low confidence ({confidence:.2f}) — escalating {issue_name}",
+                    tags=["issue_advisor", "escalate", "low_confidence", issue_name],
+                )
+            return IssueResult(
+                issue_name=issue_name,
+                outcome=IssueOutcome.FAILED_ESCALATED,
+                result_summary=f"Advisor escalated due to low confidence ({confidence:.2f} < 0.4)",
+                error_message=advisor_decision.get("failure_diagnosis", ""),
+                error_context=result.error_context,
+                files_changed=result.files_changed,
+                branch_name=result.branch_name,
+                attempts=iteration_count,
+                advisor_invocations=advisor_round + 1,
+                adaptations=adaptations,
+                debt_items=debt_items,
+                escalation_context=f"Low advisor confidence: {confidence:.2f}. {advisor_decision.get('escalation_reason', '')}",
+                iteration_history=result.iteration_history,
             )
 
         if action == AdvisorAction.RETRY_MODIFIED.value:
