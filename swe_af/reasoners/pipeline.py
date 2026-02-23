@@ -171,6 +171,9 @@ async def run_product_manager(
     ai_provider: str = "claude",
 ) -> dict:
     """Run the product manager agent to scope a goal into a PRD."""
+    import tempfile
+    import shutil
+
     router.note("PM starting", tags=["pm", "start"])
 
     base = os.path.join(os.path.abspath(repo_path), artifacts_dir)
@@ -200,6 +203,35 @@ async def run_product_manager(
     )
     if response.parsed is None:
         raise RuntimeError("Product manager failed to produce a valid PRD")
+
+    # Atomic write: If the PM agent wrote a PRD file, rewrite it atomically
+    # to prevent race conditions with concurrent Architect reads
+    prd_path = paths["prd"]
+    if os.path.isfile(prd_path):
+        try:
+            # Read the content that was written
+            with open(prd_path, 'r', encoding='utf-8') as f:
+                prd_content = f.read()
+
+            # Write to temp file in same directory (same filesystem for atomic rename)
+            temp_fd, temp_path = tempfile.mkstemp(
+                dir=os.path.dirname(prd_path),
+                prefix=".prd_",
+                suffix=".md.tmp"
+            )
+            try:
+                with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                    f.write(prd_content)
+                # Atomic rename (POSIX guarantee)
+                shutil.move(temp_path, prd_path)
+            except Exception:
+                # Clean up temp file on failure
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
+        except Exception as e:
+            router.note(f"Warning: Failed to rewrite PRD atomically: {e}", tags=["pm", "warning"])
+            # Non-fatal - the PRD was already written by the agent
 
     router.note("PM complete", tags=["pm", "complete"])
     return response.parsed.model_dump()
