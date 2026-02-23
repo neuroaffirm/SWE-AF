@@ -1258,65 +1258,100 @@ async def run_dag(
 
         if unrecoverable:
             if config.enable_replanning and dag_state.replan_count < config.max_replans:
-                # Invoke replanner (via call_fn if available, else direct)
-                if call_fn:
-                    decision = await _invoke_replanner_via_call(
-                        dag_state, unrecoverable, config, call_fn, node_id, note_fn
-                    )
-                else:
-                    decision = await _invoke_replanner_direct(
-                        dag_state, unrecoverable, config, note_fn
-                    )
+                # --- REPLANNER GATING LOGIC ---
+                # Check downstream count and level position for each failure
+                should_replan = False
+                is_final_level = dag_state.current_level >= len(dag_state.levels) - 2
 
-                if decision.action == ReplanAction.ABORT:
-                    dag_state.replan_count += 1
-                    dag_state.replan_history.append(decision)
-                    if note_fn:
-                        note_fn(
-                            f"Replanner decided to ABORT: {decision.rationale}",
-                            tags=["execution", "abort"],
-                        )
-                    if cleanup_task:
-                        await cleanup_task
-                    break
+                for failure in unrecoverable:
+                    downstream = find_downstream(failure.issue_name, dag_state.all_issues)
+                    downstream_count = len(downstream)
 
-                elif decision.action == ReplanAction.CONTINUE:
-                    # Pitfall 6: enrich downstream with failure notes
-                    dag_state = _enrich_downstream_with_failure_notes(
-                        dag_state, unrecoverable
-                    )
-                    dag_state.replan_count += 1
-                    dag_state.replan_history.append(decision)
-                    # Skip downstream of failed issues
-                    dag_state = _skip_downstream(dag_state, unrecoverable)
-
-                else:
-                    # MODIFY_DAG or REDUCE_SCOPE — apply the replan
-                    try:
-                        if cleanup_task:
-                            await cleanup_task
-                        dag_state = apply_replan(dag_state, decision)
-                        # Rebuild issue lookup after replan
-                        issue_by_name = {i["name"]: i for i in dag_state.all_issues}
-
-                        # Pitfall 3: Write issue files for new/updated issues
-                        if call_fn and (decision.new_issues or decision.updated_issues):
-                            await _write_issue_files_for_replan(
-                                decision, dag_state, config, call_fn, node_id, note_fn
-                            )
-
-                        # Checkpoint after replan applied
-                        _save_checkpoint(dag_state, note_fn)
-
-                        # current_level was reset to 0 by apply_replan
-                        continue  # re-enter loop at new level 0
-                    except ValueError as e:
+                    # Gate condition: ≥2 downstream AND not final level
+                    if downstream_count >= 2 and not is_final_level:
+                        should_replan = True
                         if note_fn:
                             note_fn(
-                                f"Replan produced invalid DAG (cycle): {e}",
-                                tags=["execution", "replan", "error"],
+                                f"Replanner gate: {failure.issue_name} has {downstream_count} downstream → invoke",
+                                tags=["replanner_gate", "invoke"]
                             )
+                        break
+                    else:
+                        if note_fn:
+                            if is_final_level:
+                                skip_reason = "final level"
+                            elif downstream_count == 0:
+                                skip_reason = "isolated (0 downstream)"
+                            else:
+                                skip_reason = f"isolated ({downstream_count} downstream)"
+                            note_fn(
+                                f"Replanner gate: {failure.issue_name} {skip_reason} → skip",
+                                tags=["replanner_gate", "skip", skip_reason.replace(" ", "_")]
+                            )
+
+                if should_replan:
+                    # Invoke replanner (via call_fn if available, else direct)
+                    if call_fn:
+                        decision = await _invoke_replanner_via_call(
+                            dag_state, unrecoverable, config, call_fn, node_id, note_fn
+                        )
+                    else:
+                        decision = await _invoke_replanner_direct(
+                            dag_state, unrecoverable, config, note_fn
+                        )
+
+                    if decision.action == ReplanAction.ABORT:
+                        dag_state.replan_count += 1
+                        dag_state.replan_history.append(decision)
+                        if note_fn:
+                            note_fn(
+                                f"Replanner decided to ABORT: {decision.rationale}",
+                                tags=["execution", "abort"],
+                            )
+                        if cleanup_task:
+                            await cleanup_task
+                        break
+
+                    elif decision.action == ReplanAction.CONTINUE:
+                        # Pitfall 6: enrich downstream with failure notes
+                        dag_state = _enrich_downstream_with_failure_notes(
+                            dag_state, unrecoverable
+                        )
+                        dag_state.replan_count += 1
+                        dag_state.replan_history.append(decision)
+                        # Skip downstream of failed issues
                         dag_state = _skip_downstream(dag_state, unrecoverable)
+
+                    else:
+                        # MODIFY_DAG or REDUCE_SCOPE — apply the replan
+                        try:
+                            if cleanup_task:
+                                await cleanup_task
+                            dag_state = apply_replan(dag_state, decision)
+                            # Rebuild issue lookup after replan
+                            issue_by_name = {i["name"]: i for i in dag_state.all_issues}
+
+                            # Pitfall 3: Write issue files for new/updated issues
+                            if call_fn and (decision.new_issues or decision.updated_issues):
+                                await _write_issue_files_for_replan(
+                                    decision, dag_state, config, call_fn, node_id, note_fn
+                                )
+
+                            # Checkpoint after replan applied
+                            _save_checkpoint(dag_state, note_fn)
+
+                            # current_level was reset to 0 by apply_replan
+                            continue  # re-enter loop at new level 0
+                        except ValueError as e:
+                            if note_fn:
+                                note_fn(
+                                    f"Replan produced invalid DAG (cycle): {e}",
+                                    tags=["execution", "replan", "error"],
+                                )
+                            dag_state = _skip_downstream(dag_state, unrecoverable)
+                else:
+                    # All failures gated — skip downstream without replanning
+                    dag_state = _skip_downstream(dag_state, unrecoverable)
             else:
                 # Replanning exhausted or disabled — skip downstream
                 dag_state = _skip_downstream(dag_state, unrecoverable)
