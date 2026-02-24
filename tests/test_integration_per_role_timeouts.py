@@ -60,6 +60,7 @@ async def test_coding_loop_respects_per_role_timeouts():
                 "approved": True,
                 "blocking": False,
                 "summary": "LGTM",
+                "debt_items": [],
             }
         raise ValueError(f"Unexpected call: {target}")
 
@@ -171,14 +172,14 @@ async def test_timeout_default_fallback():
     # Coder should use specific timeout
     assert config.timeout_for_role("coder") == 800
 
-    # Reviewer should fall back to default
-    assert config.timeout_for_role("code_reviewer") == 1200
+    # Reviewer has its own default (1500), not the agent_timeout_seconds fallback
+    assert config.timeout_for_role("code_reviewer") == 1500
 
-    # Issue advisor should fall back to default
-    assert config.timeout_for_role("issue_advisor") == 1200
+    # Issue advisor has its own default (1500), not the agent_timeout_seconds fallback
+    assert config.timeout_for_role("issue_advisor") == 1500
 
-    # Replanner should fall back to default
-    assert config.timeout_for_role("replan") == 1200
+    # Replanner has its own default (1500), not the agent_timeout_seconds fallback
+    assert config.timeout_for_role("replan") == 1500
 
 
 @pytest.mark.asyncio
@@ -235,6 +236,7 @@ async def test_flagged_path_qa_timeout():
                 "approved": True,
                 "blocking": False,
                 "summary": "LGTM",
+                "debt_items": [],
             }
         if "run_qa_synthesizer" in target:
             return {

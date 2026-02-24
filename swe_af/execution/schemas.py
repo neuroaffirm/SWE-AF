@@ -516,7 +516,7 @@ class BuildConfig(BaseModel):
     repo_url: str = ""                # GitHub URL to clone
     enable_github_pr: bool = True     # Create draft PR after build
     github_pr_base: str = ""          # PR base branch (default: repo's default branch)
-    agent_timeout_seconds: int = 2700
+    agent_timeout_seconds: int = 1800  # 30 min (max of role-specific timeouts)
     max_advisor_invocations: int = 2
     enable_issue_advisor: bool = True
     enable_learning: bool = False  # Cross-issue shared memory (conventions, failure patterns, bug patterns)
@@ -607,7 +607,7 @@ class ExecutionConfig(BaseModel):
     enable_integration_testing: bool = True
     max_coding_iterations: int = 6
     agent_max_turns: int = DEFAULT_AGENT_MAX_TURNS
-    agent_timeout_seconds: int = 2700       # 45 min
+    agent_timeout_seconds: int = 1800  # 30 min (max of role-specific timeouts)
     max_advisor_invocations: int = 2
     enable_issue_advisor: bool = True
     enable_learning: bool = False

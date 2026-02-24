@@ -105,14 +105,14 @@ class TestPerRoleTimeouts:
     def test_unknown_role_returns_timeout_fallback(self):
         """Verify unknown role returns agent_timeout_seconds fallback."""
         config = ExecutionConfig()
-        assert config.timeout_for_role("unknown_role") == 2700
-        assert config.timeout_for_role("nonexistent") == 2700
+        assert config.timeout_for_role("unknown_role") == 1800
+        assert config.timeout_for_role("nonexistent") == 1800
 
     def test_role_with_typo_returns_timeout_fallback(self):
         """Verify role with typo returns timeout fallback."""
         config = ExecutionConfig()
-        assert config.timeout_for_role("codder") == 2700  # typo
-        assert config.timeout_for_role("PM") == 2700  # wrong case
+        assert config.timeout_for_role("codder") == 1800  # typo
+        assert config.timeout_for_role("PM") == 1800  # wrong case
 
     def test_backward_compatibility_with_agent_timeout_seconds(self):
         """Verify backward compatibility: unknown roles use agent_timeout_seconds override."""
@@ -135,7 +135,7 @@ class TestExecutionConfigDefaults:
         """Verify ExecutionConfig can be instantiated with defaults."""
         config = ExecutionConfig()
         assert config.agent_max_turns == DEFAULT_AGENT_MAX_TURNS
-        assert config.agent_timeout_seconds == 2700
+        assert config.agent_timeout_seconds == 1800
         assert config.coder_turns == 100
         assert config.coder_timeout == 1800
 
@@ -143,7 +143,7 @@ class TestExecutionConfigDefaults:
         """Verify DEFAULT_AGENT_MAX_TURNS and agent_timeout_seconds are preserved."""
         config = ExecutionConfig()
         assert config.agent_max_turns == 150
-        assert config.agent_timeout_seconds == 2700
+        assert config.agent_timeout_seconds == 1800
 
 
 class TestEdgeCases:
@@ -153,7 +153,7 @@ class TestEdgeCases:
         """Verify empty string role returns fallback."""
         config = ExecutionConfig()
         assert config.max_turns_for_role("") == DEFAULT_AGENT_MAX_TURNS
-        assert config.timeout_for_role("") == 2700
+        assert config.timeout_for_role("") == 1800
 
     def test_all_16_turn_fields_exist(self):
         """Verify all 16 per-role turn fields exist on ExecutionConfig."""
