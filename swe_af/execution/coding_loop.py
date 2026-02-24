@@ -766,6 +766,22 @@ async def run_coding_loop(
             )
 
         # --- 4. BRANCH ON ACTION ---
+        # For trivial issues, require tests to pass before approval
+        # This prevents approval when tests fail, forcing another iteration
+        if action == "approve" and is_trivial and not coder_result.get("tests_passed"):
+            if note_fn:
+                note_fn(
+                    f"Trivial issue requires passing tests: {issue_name} - continuing despite approval",
+                    tags=["coding_loop", "trivial", "tests_required", issue_name],
+                )
+            # Override action to "fix" and provide feedback
+            action = "fix"
+            feedback = f"Tests must pass for trivial issues. {summary}"
+            # Update iteration history to reflect the override
+            iteration_history[-1]["action"] = "fix"
+            iteration_history[-1]["summary"] = feedback
+            iteration_history[-1]["tests_required"] = True
+
         if action == "approve":
             if note_fn:
                 note_fn(
