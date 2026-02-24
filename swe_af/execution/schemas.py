@@ -10,6 +10,9 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 # Per-role turn limits are now defined in ExecutionConfig and BuildConfig.
 # Global default is 150 (hardcoded in field defaults below).
 
+# Global default for all agent timeouts. Change this one value to adjust everywhere.
+DEFAULT_AGENT_TIMEOUT_SECONDS: int = 2700
+
 
 class AdvisorAction(str, Enum):
     """What the Issue Advisor decided to do after a coding loop failure."""
