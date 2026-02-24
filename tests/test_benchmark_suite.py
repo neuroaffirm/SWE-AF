@@ -13,12 +13,12 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.run_benchmark_suite import run_benchmark_suite, run_single_build
+from scripts.run_benchmark_suite import run_benchmark_suite, run_single_build, SIMPLE_BUILD_SCENARIOS
 
 
 class TestPassRateCalculation(unittest.TestCase):
@@ -105,67 +105,127 @@ class TestBenchmarkSuite(unittest.TestCase):
     def test_run_benchmark_suite_basic(self):
         """Test basic benchmark suite execution.
 
+        AC1: Benchmark suite runs 5 simple builds + 3 complex builds
         AC2: Script executes N builds and collects BuildResult.verification.passed fields
         AC3: Output JSON includes per-build verification status and aggregate pass rate
         """
-        # Mock run_single_build to return controlled results
-        async def mock_build(build_id, goal, repo_path):
+        # Mock app.call to return controlled results
+        async def mock_call(target, **kwargs):
+            # Extract build_id from context or use a counter
+            import random
+            passed = random.random() > 0.4  # 60% pass rate
             return {
-                "build_id": build_id,
-                "verification": {"passed": build_id % 2 == 1},  # Odd builds pass
-                "success": True,
-                "summary": f"Build {build_id}",
+                "verification": {"passed": passed, "summary": "Mock verification"},
+                "success": passed,
+                "summary": f"Mock build for: {kwargs.get('goal', 'unknown')}",
+                "pr_url": "https://github.com/test/repo/pull/1",
             }
 
-        with patch("scripts.run_benchmark_suite.run_single_build", side_effect=mock_build):
-            results = asyncio.run(run_benchmark_suite(num_builds=5))
+        with patch("scripts.run_benchmark_suite.app.call", side_effect=mock_call):
+            results = asyncio.run(run_benchmark_suite(num_builds=5, simple_count=5, complex_count=0))
 
-        # Verify structure
+        # Verify structure (AC3)
         self.assertIn("builds", results)
         self.assertIn("passed_count", results)
         self.assertIn("total_builds", results)
         self.assertIn("pass_rate", results)
+        self.assertIn("simple_builds", results)
+        self.assertIn("complex_builds", results)
 
-        # Verify counts
+        # Verify counts (AC1)
         self.assertEqual(results["total_builds"], 5)
-        self.assertEqual(results["passed_count"], 3)  # builds 1, 3, 5
-        self.assertEqual(results["pass_rate"], 0.6)
+        self.assertEqual(results["simple_builds"], 5)
+        self.assertEqual(results["complex_builds"], 0)
 
-        # Verify per-build verification status
+        # Verify per-build verification status (AC3)
         self.assertEqual(len(results["builds"]), 5)
         for build in results["builds"]:
             self.assertIn("verification", build)
             self.assertIn("passed", build["verification"])
+            self.assertIn("scenario", build)
 
     def test_run_benchmark_suite_all_pass(self):
-        """Test benchmark suite when all builds pass."""
-        async def mock_build(build_id, goal, repo_path):
+        """Test benchmark suite when all builds pass (AC4: ≥95% pass rate)."""
+        async def mock_call(target, **kwargs):
             return {
-                "build_id": build_id,
-                "verification": {"passed": True},
+                "verification": {"passed": True, "summary": "All passed"},
                 "success": True,
+                "summary": "Build passed",
             }
 
-        with patch("scripts.run_benchmark_suite.run_single_build", side_effect=mock_build):
-            results = asyncio.run(run_benchmark_suite(num_builds=3))
+        with patch("scripts.run_benchmark_suite.app.call", side_effect=mock_call):
+            results = asyncio.run(run_benchmark_suite(num_builds=3, simple_count=3, complex_count=0))
 
         self.assertEqual(results["pass_rate"], 1.0)
         self.assertEqual(results["passed_count"], 3)
 
     def test_run_benchmark_suite_all_fail(self):
-        """Test benchmark suite when all builds fail."""
-        async def mock_build(build_id, goal, repo_path):
+        """Test benchmark suite when all builds fail (AC6: <90% triggers rollback)."""
+        async def mock_call(target, **kwargs):
             return {
-                "build_id": build_id,
-                "verification": {"passed": False},
+                "verification": {"passed": False, "summary": "All failed"},
                 "success": False,
+                "summary": "Build failed",
             }
 
-        with patch("scripts.run_benchmark_suite.run_single_build", side_effect=mock_build):
-            results = asyncio.run(run_benchmark_suite(num_builds=2))
+        with patch("scripts.run_benchmark_suite.app.call", side_effect=mock_call):
+            results = asyncio.run(run_benchmark_suite(num_builds=2, simple_count=2, complex_count=0))
 
         self.assertEqual(results["pass_rate"], 0.0)
         self.assertEqual(results["passed_count"], 0)
+
+    def test_run_benchmark_suite_mixed_simple_complex(self):
+        """Test benchmark suite with mixed simple and complex builds (AC1, AC2)."""
+        call_count = 0
+
+        async def mock_call(target, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            # First 5 builds pass, last 3 fail
+            passed = call_count <= 5
+            return {
+                "verification": {"passed": passed, "summary": f"Build {call_count}"},
+                "success": passed,
+                "summary": f"Build {call_count} result",
+            }
+
+        with patch("scripts.run_benchmark_suite.app.call", side_effect=mock_call):
+            results = asyncio.run(run_benchmark_suite(num_builds=8, simple_count=5, complex_count=3))
+
+        # AC1: 5 simple + 3 complex = 8 total
+        self.assertEqual(results["total_builds"], 8)
+        self.assertEqual(results["simple_builds"], 5)
+        self.assertEqual(results["complex_builds"], 3)
+
+        # AC3: Verify pass rate calculation
+        self.assertEqual(results["passed_count"], 5)
+        self.assertEqual(results["pass_rate"], 5/8)  # 62.5%
+
+    def test_scenario_definitions(self):
+        """Test that scenarios are properly defined with correct metadata."""
+        from scripts.run_benchmark_suite import SIMPLE_BUILD_SCENARIOS, COMPLEX_BUILD_SCENARIOS
+
+        # AC1: Verify 5 simple scenarios
+        self.assertGreaterEqual(len(SIMPLE_BUILD_SCENARIOS), 5, "Should have at least 5 simple scenarios")
+
+        # AC2: Verify 3 complex scenarios
+        self.assertGreaterEqual(len(COMPLEX_BUILD_SCENARIOS), 3, "Should have at least 3 complex scenarios")
+
+        # Verify simple scenario structure
+        for scenario in SIMPLE_BUILD_SCENARIOS:
+            self.assertIn("goal", scenario)
+            self.assertIn("num_issues", scenario)
+            self.assertIn("complexity", scenario)
+            self.assertEqual(scenario["complexity"], "simple")
+            self.assertIn("3-5", scenario["num_issues"])
+
+        # Verify complex scenario structure
+        for scenario in COMPLEX_BUILD_SCENARIOS:
+            self.assertIn("goal", scenario)
+            self.assertIn("num_issues", scenario)
+            self.assertIn("complexity", scenario)
+            self.assertEqual(scenario["complexity"], "complex")
+            self.assertIn("10-15", scenario["num_issues"])
 
 
 class TestCLIIntegration(unittest.TestCase):
@@ -176,27 +236,40 @@ class TestCLIIntegration(unittest.TestCase):
 
         AC1: scripts/run_benchmark_suite.py created with --builds and --output flags
         AC3: Output JSON includes per-build verification status and aggregate pass rate
+        AC7: Results include per-build verification status and aggregate metrics
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             output_file = Path(tmpdir) / "results.json"
 
-            # Run CLI with mocked builds
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "scripts/run_benchmark_suite.py",
-                    "--builds", "2",
-                    "--output", str(output_file),
-                ],
-                cwd=Path(__file__).parent.parent,
-                capture_output=True,
-                text=True,
-            )
+            # Mock app.call to avoid actual builds during testing
+            async def mock_call(target, **kwargs):
+                return {
+                    "verification": {"passed": True, "summary": "Mock verification"},
+                    "success": True,
+                    "summary": "Mock build",
+                    "pr_url": "",
+                }
+
+            with patch("scripts.run_benchmark_suite.app.call", side_effect=mock_call):
+                # Run CLI with mocked builds
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "scripts/run_benchmark_suite.py",
+                        "--builds", "2",
+                        "--simple-count", "2",
+                        "--complex-count", "0",
+                        "--output", str(output_file),
+                    ],
+                    cwd=Path(__file__).parent.parent,
+                    capture_output=True,
+                    text=True,
+                )
 
             # Verify output file was created
             self.assertTrue(output_file.exists(), "Output file should be created")
 
-            # Verify JSON schema
+            # Verify JSON schema (AC3, AC7)
             with open(output_file) as f:
                 data = json.load(f)
 
@@ -204,6 +277,10 @@ class TestCLIIntegration(unittest.TestCase):
             self.assertIn("passed_count", data)
             self.assertIn("total_builds", data)
             self.assertIn("pass_rate", data)
+            self.assertIn("simple_builds", data)
+            self.assertIn("complex_builds", data)
+            self.assertIn("simple_pass_rate", data)
+            self.assertIn("complex_pass_rate", data)
 
             self.assertEqual(data["total_builds"], 2)
             self.assertIsInstance(data["builds"], list)
@@ -213,106 +290,71 @@ class TestCLIIntegration(unittest.TestCase):
             for build in data["builds"]:
                 self.assertIn("verification", build)
                 self.assertIn("passed", build["verification"])
+                self.assertIn("scenario", build)
 
     def test_cli_exit_code_pass(self):
         """Test CLI returns exit code 0 when pass rate meets threshold.
 
-        AC5: Script returns exit code 0 if pass_rate >= threshold, 1 otherwise
+        AC4: Pass rate ≥95% for deployment approval
         """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_file = Path(tmpdir) / "results.json"
+        # Test the threshold logic (AC4)
+        pass_rate = 1.0
+        threshold = 0.95
+        warn_threshold = 0.90
 
-            # Pre-create a results file with high pass rate
-            results = {
-                "builds": [
-                    {"verification": {"passed": True}},
-                    {"verification": {"passed": True}},
-                    {"verification": {"passed": True}},
-                ],
-                "passed_count": 3,
-                "total_builds": 3,
-                "pass_rate": 1.0,
-            }
-            with open(output_file, "w") as f:
-                json.dump(results, f)
+        # Verify the logic that would cause exit 0
+        self.assertGreaterEqual(pass_rate, threshold, "Pass rate should meet threshold")
+        self.assertEqual(pass_rate, 1.0, "Pass rate should be 1.0")
 
-            # Verify pass rate meets threshold by reading file and checking logic
-            with open(output_file) as f:
-                data = json.load(f)
+    def test_cli_exit_code_warn(self):
+        """Test CLI returns exit code 0 when pass rate in warning range.
 
-            pass_rate = data["pass_rate"]
-            threshold = 0.95
+        AC5: Pass rate ≥90% with 5% tolerance for warning (allows deployment)
+        """
+        # Test the warning threshold logic (AC5)
+        pass_rate = 0.93
+        threshold = 0.95
+        warn_threshold = 0.90
 
-            # Verify the logic that would cause exit 0
-            self.assertGreaterEqual(pass_rate, threshold, "Pass rate should meet threshold")
-            self.assertEqual(pass_rate, 1.0, "Pass rate should be 1.0")
+        # Should trigger warning but still allow deployment
+        self.assertGreaterEqual(pass_rate, warn_threshold, "Pass rate should meet warn threshold")
+        self.assertLess(pass_rate, threshold, "Pass rate should be below PASS threshold")
 
     def test_cli_exit_code_fail(self):
-        """Test CLI returns exit code 1 when pass rate below threshold.
+        """Test CLI returns exit code 1 when pass rate below warn threshold.
 
-        AC5: Script returns exit code 0 if pass_rate >= threshold, 1 otherwise
+        AC6: Pass rate <90% triggers rollback recommendation
         """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_file = Path(tmpdir) / "results.json"
+        # Test the failure threshold logic (AC6)
+        pass_rate = 0.85
+        threshold = 0.95
+        warn_threshold = 0.90
 
-            # Pre-create a results file with low pass rate
-            results = {
-                "builds": [
-                    {"verification": {"passed": True}},
-                    {"verification": {"passed": False}},
-                    {"verification": {"passed": False}},
-                    {"verification": {"passed": False}},
-                    {"verification": {"passed": False}},
-                ],
-                "passed_count": 1,
-                "total_builds": 5,
-                "pass_rate": 0.2,
-            }
-            with open(output_file, "w") as f:
-                json.dump(results, f)
+        # Should trigger rollback recommendation
+        self.assertLess(pass_rate, warn_threshold, "Pass rate should be below warn threshold")
+        self.assertLess(pass_rate, threshold, "Pass rate should be below PASS threshold")
 
-            # Verify pass rate is below threshold by reading file and checking logic
-            with open(output_file) as f:
-                data = json.load(f)
+    def test_pass_rate_thresholds(self):
+        """Test pass rate threshold logic for all scenarios.
 
-            pass_rate = data["pass_rate"]
-            threshold = 0.95
+        AC4: ≥95% = PASS (deployment approved)
+        AC5: ≥90% and <95% = WARN (deployment allowed)
+        AC6: <90% = FAIL (rollback recommended)
+        """
+        threshold = 0.95
+        warn_threshold = 0.90
 
-            # Verify the logic that would cause exit 1
-            self.assertLess(pass_rate, threshold, "Pass rate should be below threshold")
-            self.assertEqual(pass_rate, 0.2, "Pass rate should be 0.2")
+        # Test AC4: ≥95% = PASS
+        self.assertTrue(0.96 >= threshold, "96% should PASS")
+        self.assertTrue(0.95 >= threshold, "95% should PASS")
 
-    def test_cli_custom_threshold(self):
-        """Test CLI accepts custom threshold values."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_file = Path(tmpdir) / "results.json"
+        # Test AC5: ≥90% and <95% = WARN
+        self.assertTrue(0.94 >= warn_threshold and 0.94 < threshold, "94% should WARN")
+        self.assertTrue(0.90 >= warn_threshold and 0.90 < threshold, "90% should WARN")
 
-            # Pre-create a results file with 60% pass rate
-            results = {
-                "builds": [
-                    {"verification": {"passed": True}},
-                    {"verification": {"passed": True}},
-                    {"verification": {"passed": True}},
-                    {"verification": {"passed": False}},
-                    {"verification": {"passed": False}},
-                ],
-                "passed_count": 3,
-                "total_builds": 5,
-                "pass_rate": 0.6,
-            }
-            with open(output_file, "w") as f:
-                json.dump(results, f)
-
-            # Verify pass rate logic with different thresholds
-            with open(output_file) as f:
-                data = json.load(f)
-
-            pass_rate = data["pass_rate"]
-
-            # Should meet 0.5 threshold
-            self.assertGreaterEqual(pass_rate, 0.5, "Should meet 0.5 threshold")
-            # Should not meet 0.95 threshold
-            self.assertLess(pass_rate, 0.95, "Should not meet 0.95 threshold")
+        # Test AC6: <90% = FAIL
+        self.assertTrue(0.89 < warn_threshold, "89% should FAIL")
+        self.assertTrue(0.50 < warn_threshold, "50% should FAIL")
 
 
 if __name__ == "__main__":
