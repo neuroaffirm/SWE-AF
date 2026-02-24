@@ -310,7 +310,6 @@ async def _run_default_path(
     project_context: dict,
     memory_context: dict,
     config: ExecutionConfig,
-    timeout: int,
     issue_name: str,
     note_fn: Callable | None = None,
 ) -> tuple[str, str, dict | None]:
@@ -380,7 +379,6 @@ async def _run_flagged_path(
     project_context: dict,
     memory_context: dict,
     config: ExecutionConfig,
-    timeout: int,
     issue_name: str,
     note_fn: Callable | None = None,
 ) -> tuple[str, str, dict | None, dict | None, dict | None]:
@@ -702,7 +700,6 @@ async def run_coding_loop(
                 project_context=project_context,
                 memory_context=memory_context,
                 config=config,
-                timeout=timeout,
                 issue_name=issue_name,
                 note_fn=note_fn,
             )
@@ -724,7 +721,6 @@ async def run_coding_loop(
                 project_context=project_context,
                 memory_context=memory_context,
                 config=config,
-                timeout=timeout,
                 issue_name=issue_name,
                 note_fn=note_fn,
             )
