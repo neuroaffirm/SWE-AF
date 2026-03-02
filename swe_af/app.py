@@ -22,7 +22,7 @@ from swe_af.reasoners.pipeline import _assign_sequence_numbers, _compute_levels,
 from swe_af.reasoners.schemas import PlanResult, ReviewResult
 
 from agentfield import Agent
-from swe_af.approval import ApprovalClient
+from agentfield.client import ApprovalResult
 from swe_af.execution.envelope import unwrap_call_result as _unwrap
 from swe_af.execution.schemas import (
     BuildConfig,
@@ -484,9 +484,9 @@ async def build(
     #     SWE-AF calls hax-sdk directly; the CP only manages execution state.
     #     Supports iterative revision: reviewer can "request changes" and the agent
     #     will re-plan (Architect → TechLead → SprintPlanner) with the feedback.
-    from swe_af.approval import is_approval_enabled
+    _hax_api_key = os.environ.get("HAX_API_KEY", "").strip()
     execution_id = app.ctx.execution_id if app.ctx else ""
-    _approval_enabled = is_approval_enabled()
+    _approval_enabled = bool(_hax_api_key)
     app.note(
         f"Approval check: HAX_API_KEY={'set' if _approval_enabled else 'NOT SET'}, "
         f"execution_id={'present' if execution_id else 'MISSING'}",
@@ -494,8 +494,13 @@ async def build(
     )
     if _approval_enabled and execution_id:
         import json as _json
+        from hax import HaxClient
 
-        approval_client = ApprovalClient(app)
+        hax_client = HaxClient(
+            api_key=_hax_api_key,
+            base_url=os.environ.get("HAX_SDK_URL", "http://localhost:3000") + "/api/v1",
+        )
+        cp_base_url = (app.agentfield_server or "http://localhost:8080").rstrip("/")
         approval_state_path = os.path.join(abs_artifacts_dir, "approval_state.json")
         os.makedirs(os.path.dirname(approval_state_path), exist_ok=True)
         revision_history: list[dict] = []
@@ -510,28 +515,56 @@ async def build(
                 _format_plan_for_approval(plan_result)
             )
 
-            def _save_pending_state(req_id: str, req_url: str) -> None:
-                with open(approval_state_path, "w") as _fp:
-                    _json.dump({
-                        "decision": "pending",
-                        "feedback": "",
-                        "request_id": req_id,
-                        "request_url": req_url,
-                        "revision_number": revision_iter,
-                    }, _fp, indent=2)
+            # Create the approval request on hax-sdk
+            title = "SWE-AF Plan Review"
+            if revision_iter > 0:
+                title = f"SWE-AF Plan Review (Revision {revision_iter})"
 
-            approval_result = await approval_client.request_plan_approval(
-                execution_id=execution_id,
-                plan_summary=plan_summary,
-                issues=issues_for_template,
-                architecture=architecture_markdown,
-                prd=prd_markdown,
-                goal_description=goal,
-                repo_url=cfg.repo_url,
+            hax_payload = {
+                "planSummary": plan_summary,
+                "issues": issues_for_template,
+                "architecture": architecture_markdown,
+                "prd": prd_markdown,
+                "metadata": {
+                    "repoUrl": cfg.repo_url,
+                    "goalDescription": goal,
+                    "agentNodeId": NODE_ID,
+                    "executionId": execution_id,
+                },
+                "revisionNumber": revision_iter,
+                "revisionHistory": revision_history,
+            }
+
+            hax_create_kwargs: dict = {
+                "type": "plan-review-v2",
+                "title": title,
+                "description": "Review the proposed implementation plan before execution begins",
+                "payload": hax_payload,
+                "webhook_url": f"{cp_base_url}/api/v1/webhooks/approval-response",
+                "expires_in_seconds": cfg.approval_expires_in_hours * 3600,
+            }
+            approval_user_id = os.environ.get("AGENTFIELD_APPROVAL_USER_ID", "")
+            if approval_user_id:
+                hax_create_kwargs["user_id"] = approval_user_id
+
+            hax_request = hax_client.create_request(**hax_create_kwargs)
+
+            # Save pending state
+            with open(approval_state_path, "w") as _fp:
+                _json.dump({
+                    "decision": "pending",
+                    "feedback": "",
+                    "request_id": hax_request.id,
+                    "request_url": hax_request.url,
+                    "revision_number": revision_iter,
+                }, _fp, indent=2)
+
+            # Pause execution — SDK transitions CP to "waiting" and waits for
+            # the webhook callback (hax-sdk → CP → agent /webhooks/approval)
+            approval_result = await app.pause(
+                approval_request_id=hax_request.id,
+                approval_request_url=hax_request.url,
                 expires_in_hours=cfg.approval_expires_in_hours,
-                on_request_created=_save_pending_state,
-                revision_number=revision_iter,
-                revision_history=revision_history,
             )
 
             # Persist decision
@@ -539,8 +572,8 @@ async def build(
                 _json.dump({
                     "decision": approval_result.decision,
                     "feedback": approval_result.feedback,
-                    "request_id": approval_result.request_id,
-                    "request_url": approval_result.request_url,
+                    "request_id": approval_result.approval_request_id,
+                    "request_url": hax_request.url,
                     "revision_number": revision_iter,
                     "revision_history": revision_history,
                 }, _f, indent=2)
@@ -1343,26 +1376,24 @@ async def resume_build(
                 "error": f"Plan was {prev_decision} in previous run",
             }
         elif prev_decision == "pending" and approval_state.get("request_id"):
-            # Process crashed while polling — resume polling
+            # Process crashed while waiting — resume via SDK wait_for_resume
             app.note(
-                "Resuming approval polling from previous run",
-                tags=["build", "resume", "approval", "polling"],
+                "Resuming approval wait from previous run",
+                tags=["build", "resume", "approval", "waiting"],
             )
             execution_id = app.ctx.execution_id if app.ctx else ""
             if execution_id:
-                approval_client = ApprovalClient(app)
-                result = await approval_client.wait_for_approval(
+                result = await app.wait_for_resume(
+                    approval_request_id=approval_state["request_id"],
                     execution_id=execution_id,
-                    request_id=approval_state["request_id"],
-                    request_url=approval_state.get("request_url", ""),
                 )
                 # Update saved state
                 with open(approval_state_path, "w") as f:
                     json.dump({
                         "decision": result.decision,
                         "feedback": result.feedback,
-                        "request_id": result.request_id,
-                        "request_url": result.request_url,
+                        "request_id": result.approval_request_id,
+                        "request_url": approval_state.get("request_url", ""),
                     }, f, indent=2)
 
                 if not result.approved:
