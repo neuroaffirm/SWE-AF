@@ -146,7 +146,7 @@ Details: [`examples/llm-rust-python-compiler-sonnet/README.md`](examples/llm-rus
 Most agent frameworks wrap a single coder loop. SWE-AF is a coordinated engineering factory — planning, execution, and governance agents run as a control stack that adapts in real time.
 
 - **Hardness-aware execution** — easy issues pass through quickly, while hard issues trigger deeper adaptation and DAG-level replanning instead of blind retries.
-- **Factory architecture** — not a single-agent wrapper. Planning, execution, and governance agents run as a coordinated control stack.
+- **Factory architecture** — not a single-agent wrapper. Planning, execution, and governance agents run as a coordinated control stack — the architecture encodes the engineering strategy, not the prompts (see [The Atomic Unit of Intelligence](https://www.santoshkumarradha.com/writing/atomic-unit-of-intelligence)).
 - **Multi-model, multi-provider** — assign different models per role (`coder: opus`, `qa: haiku`). Works with Claude, OpenRouter, OpenAI, and Google.
 - **Continual learning** — with `enable_learning=true`, conventions and failure patterns discovered early are injected into downstream issues.
 - **Agent-scale parallelism** — dependency-level scheduling + isolated git worktrees allow large fan-out without branch collisions.
