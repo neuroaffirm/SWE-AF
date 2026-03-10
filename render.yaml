@@ -1,10 +1,8 @@
 services:
-  # --- Control Plane (internal only) ---
+  # --- Control Plane (private, internal only) ---
   - type: pserv
     name: swe-af-control-plane
-    runtime: docker
-    dockerfilePath: .
-    dockerCommand: ""
+    runtime: image
     image:
       url: ghcr.io/agent-field/agentfield-control-plane:latest
     disk:
@@ -23,27 +21,21 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
+    port: 8003
     disk:
       name: workspaces
       mountPath: /workspaces
       sizeGB: 10
     envVars:
       - key: AGENTFIELD_SERVER
-        value: http://swe-af-control-plane:10000
+        value: http://swe-af-control-plane:8080
       - key: NODE_ID
         value: swe-planner
       - key: PORT
-        value: 8003
+        value: "8003"
       - key: AGENT_CALLBACK_URL
-        fromService:
-          name: swe-af-agent
-          type: web
-          property: host
-      # --- Set these in the Render dashboard ---
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: GH_TOKEN
         sync: false
-      # Optional: use Claude subscription credits instead of API key
-      # - key: CLAUDE_CODE_OAUTH_TOKEN
-      #   sync: false
