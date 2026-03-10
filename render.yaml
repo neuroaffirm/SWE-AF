@@ -17,8 +17,8 @@ services:
       - key: PORT
         value: "8080"
 
-  # --- SWE Agent (public Web Service) ---
-  - type: web
+  # --- SWE Agent (private — only needs to be reachable by control plane) ---
+  - type: pserv
     name: swe-af-agent
     plan: standard
     runtime: docker
