@@ -29,7 +29,7 @@ services:
       sizeGB: 10
     envVars:
       - key: AGENTFIELD_SERVER
-        value: https://swe-af-control-plane.onrender.com
+        value: https://swe-af-control-plane-hugm.onrender.com
       - key: NODE_ID
         value: swe-planner
       - key: PORT
