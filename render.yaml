@@ -35,7 +35,7 @@ services:
       - key: PORT
         value: "8003"
       - key: AGENT_CALLBACK_URL
-        sync: false
+        value: http://swe-af-agent:8003
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: GH_TOKEN
