@@ -5,7 +5,6 @@ services:
     runtime: image
     image:
       url: ghcr.io/agent-field/agentfield-control-plane:latest
-    healthCheckPath: /health
     disk:
       name: agentfield-data
       mountPath: /data
