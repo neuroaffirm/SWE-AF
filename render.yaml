@@ -21,7 +21,6 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
-    port: 8003
     disk:
       name: workspaces
       mountPath: /workspaces
