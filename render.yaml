@@ -20,7 +20,7 @@ services:
   # --- SWE Agent (public Web Service) ---
   - type: web
     name: swe-af-agent
-    plan: pro
+    plan: standard
     runtime: docker
     dockerfilePath: ./Dockerfile
     disk:
