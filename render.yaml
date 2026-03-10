@@ -23,7 +23,6 @@ services:
     plan: pro
     runtime: docker
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /health
     disk:
       name: workspaces
       mountPath: /workspaces
