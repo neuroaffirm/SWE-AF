@@ -1,10 +1,11 @@
 services:
-  # --- Control Plane (private, internal only) ---
-  - type: pserv
+  # --- Control Plane (public Web Service — API gateway for SWE-AF) ---
+  - type: web
     name: swe-af-control-plane
     runtime: image
     image:
       url: ghcr.io/agent-field/agentfield-control-plane:latest
+    healthCheckPath: /health
     disk:
       name: agentfield-data
       mountPath: /data
@@ -27,7 +28,7 @@ services:
       sizeGB: 10
     envVars:
       - key: AGENTFIELD_SERVER
-        value: http://swe-af-control-plane:8080
+        value: https://swe-af-control-plane.onrender.com
       - key: NODE_ID
         value: swe-planner
       - key: PORT
