@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
     apt-get update && apt-get install -y --no-install-recommends gh && \
-    # Install OpenCode CLI v1.2+ for opencode provider (with run --model support)
-    curl -fsSL https://opencode.ai/install | bash && \
+    # Install OpenCode CLI (optional — only needed for open_code runtime)
+    curl -fsSL https://opencode.ai/install | bash || echo "OpenCode install skipped" && \
     rm -rf /var/lib/apt/lists/*
 
 # Add OpenCode to PATH for non-interactive shells
@@ -50,8 +50,5 @@ EXPOSE 8003
 ENV PORT=8003 \
     AGENTFIELD_SERVER=http://control-plane:8080 \
     NODE_ID=swe-planner
-
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
 
 CMD ["python", "-m", "swe_af"]
